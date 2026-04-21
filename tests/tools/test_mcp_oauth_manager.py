@@ -139,3 +139,64 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+def test_manager_preserves_full_server_url_for_resource_matching(tmp_path, monkeypatch):
+    """OAuth provider must keep the full MCP URL, not strip the /mcp path.
+
+    Some servers publish protected resource metadata whose ``resource`` is the
+    exact MCP endpoint URL. If we collapse the URL to just the origin, the SDK's
+    RFC 8707 resource validation rejects otherwise-correct metadata.
+    """
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    provider = MCPOAuthManager().get_or_build_provider(
+        "srv", "https://example.com/mcp", None
+    )
+
+    assert str(provider.context.server_url) == "https://example.com/mcp"
+
+
+@pytest.mark.asyncio
+async def test_hermes_provider_async_auth_flow_preserves_sent_response(tmp_path, monkeypatch):
+    """The wrapper must forward httpx responses back into the SDK generator.
+
+    Regression test for a bug where wrapping ``super().async_auth_flow()`` with
+    ``async for`` dropped values sent via ``asend()``, causing the inner SDK
+    generator to receive ``None`` instead of the HTTP response.
+    """
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    observed = []
+
+    async def fake_async_auth_flow(self, request):
+        observed.append(("request", request))
+        response = yield "first-request"
+        observed.append(("response", response))
+        yield "second-request"
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_async_auth_flow, raising=True)
+
+    provider = MCPOAuthManager().get_or_build_provider("srv", "https://example.com/mcp", None)
+    agen = provider.async_auth_flow("outer-request")
+
+    first = await agen.__anext__()
+    assert first == "first-request"
+
+    second = await agen.asend("fake-response")
+    assert second == "second-request"
+
+    with pytest.raises(StopAsyncIteration):
+        await agen.__anext__()
+
+    assert observed == [
+        ("request", "outer-request"),
+        ("response", "fake-response"),
+    ]
+

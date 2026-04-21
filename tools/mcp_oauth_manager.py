@@ -125,9 +125,24 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
-            # Delegate to the SDK's auth flow
-            async for item in super().async_auth_flow(request):
-                yield item
+            # Delegate to the SDK's auth flow while preserving the values
+            # HTTPX sends back into the generator via ``asend(response)``.
+            # A plain ``async for`` wrapper drops those values, which causes
+            # the inner OAuthClientProvider generator to receive ``None``
+            # instead of the HTTP response object.
+            inner = super().async_auth_flow(request)
+            response = None
+            try:
+                while True:
+                    item = await inner.asend(response)
+                    response = yield item
+            except StopAsyncIteration:
+                return
+            finally:
+                try:
+                    await inner.aclose()
+                except Exception:
+                    pass
 
     return HermesMCPOAuthProvider
 
@@ -243,7 +258,7 @@ class MCPOAuthManager:
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
-            server_url=_parse_base_url(entry.server_url),
+            server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
             redirect_handler=_redirect_handler,

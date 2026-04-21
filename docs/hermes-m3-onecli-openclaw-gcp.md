@@ -18,6 +18,60 @@ The Hermes CLI, gateway process, and cron runner all load this OneCli proxy env
 after the normal Hermes dotenv files so the remote proxy overrides stale local
 proxy values.
 
+## Memory Contract
+
+Hermes M3 uses the remote memory services exposed by `openclaw-gcp` through the
+same OneCli proxy identity. The non-secret runtime values are:
+
+```bash
+MEMOS_API_URL=https://openclaw-gcp.tailc13f7e.ts.net/memos
+MEMPALACE_MCP_URL=https://openclaw-gcp.tailc13f7e.ts.net/mempalace/mcp
+RICHARD_CANONICAL_USER_ID=rj@stratminds.vc
+```
+
+MemOS is the semantic memory authority. Use it first for durable facts,
+preferences, decisions, and person-specific recall.
+
+MemPalace is the verbatim archive and evidence layer. Use its
+`search_authorized` tool when exact wording, provenance, or supporting snippets
+are needed. Normal Richard-scoped calls should use:
+
+```json
+{
+  "viewer_user_id": "rj@stratminds.vc",
+  "subject_user_id": "rj@stratminds.vc"
+}
+```
+
+The live `search_authorized` schema also requires `scope_type`; choose the
+scope that matches the recall context:
+
+- `private`
+- `related_principal`
+- `shared_conversation`
+
+Preferred lookup order:
+
+1. Query MemOS for semantic recall.
+2. Query MemPalace `search_authorized` when exact wording or provenance matters.
+3. If MemOS has the fact but MemPalace has no authorized record, treat MemOS as
+   authoritative for the semantic fact and note that no matching archive record
+   was authorized.
+
+Normalize these aliases to `rj@stratminds.vc` before reading or writing
+Richard-scoped memory:
+
+- Richard Jhang
+- Richard
+- RJ
+- Telegram `@rjstratminds`
+- WhatsApp `+1 415 962 6063`
+- Gmail `rjhang@gmail.com`
+
+For food or health facts, keep recall person-specific. Do not apply another
+person's sensitivities or preferences to Richard unless the source explicitly
+maps to `rj@stratminds.vc`.
+
 ## MCP Credential Ownership
 
 Notion, Granola, Grain, and Zoom should not keep local Hermes OAuth clients,
@@ -115,3 +169,19 @@ Restart the Hermes gateway after changing MCP config or proxy settings:
 ```bash
 hermes gateway restart
 ```
+
+Confirm memory endpoints:
+
+```bash
+source ~/.config/onecli/hermes-m3-proxy.env
+source ~/.hermes/.env
+
+curl -fsS -o /dev/null -w '%{http_code}\n' "$MEMOS_API_URL/docs"
+hermes mcp test mempalace
+```
+
+Expected results:
+
+- MemOS docs returns `200`.
+- MemPalace initializes with `serverInfo.name = "mempalace"` and discovers the
+  remote tools, including `search_authorized`.

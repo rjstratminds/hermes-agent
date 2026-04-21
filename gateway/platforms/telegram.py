@@ -98,6 +98,10 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
+def _redact_proxy_url(proxy_url: str) -> str:
+    return re.sub(r"(://[^:/?#]+:)[^@/?#]+@", r"\1<redacted>@", proxy_url)
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escape backslashes to produce clean plain text.
 
@@ -706,7 +710,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                logger.info(
+                    "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
+                    self.name,
+                    _redact_proxy_url(proxy_url),
+                )
                 request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
                 get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
             else:

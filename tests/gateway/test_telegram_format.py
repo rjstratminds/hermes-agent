@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _redact_proxy_url,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -85,6 +86,26 @@ class TestEscapeMdv2:
     def test_mixed_text_and_specials(self):
         result = _escape_mdv2("Hello (world)!")
         assert result == "Hello \\(world\\)\\!"
+
+
+# =========================================================================
+# _redact_proxy_url
+# =========================================================================
+
+
+class TestRedactProxyUrl:
+    def test_redacts_proxy_password(self):
+        proxy_url = "http://x:aoc_secret@openclaw-gcp.tailc13f7e.ts.net:10255"
+
+        result = _redact_proxy_url(proxy_url)
+
+        assert result == "http://x:<redacted>@openclaw-gcp.tailc13f7e.ts.net:10255"
+        assert "aoc_secret" not in result
+
+    def test_leaves_url_without_credentials_unchanged(self):
+        proxy_url = "http://openclaw-gcp.tailc13f7e.ts.net:10255"
+
+        assert _redact_proxy_url(proxy_url) == proxy_url
 
 
 # =========================================================================

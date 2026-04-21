@@ -92,9 +92,13 @@ _hermes_home = get_hermes_home()
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import default_onecli_proxy_env_path, load_hermes_dotenv
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=Path(__file__).resolve().parents[1] / '.env',
+    onecli_proxy_env=default_onecli_proxy_env_path(),
+)
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.

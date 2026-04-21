@@ -4727,6 +4727,46 @@ class AIAgent:
             try:
                 import httpx as _httpx
                 import socket as _socket
+                from urllib.parse import urlparse
+
+                def _host_in_no_proxy(host: str, port: int | None) -> bool:
+                    no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+                    if not host or not no_proxy:
+                        return False
+                    host_l = host.lower()
+                    host_port = f"{host_l}:{port}" if port else host_l
+                    for raw_entry in no_proxy.split(","):
+                        entry = raw_entry.strip().lower()
+                        if not entry:
+                            continue
+                        if entry == "*":
+                            return True
+                        if entry == host_l or entry == host_port:
+                            return True
+                        if entry.startswith(".") and host_l.endswith(entry):
+                            return True
+                        if not entry.startswith(".") and host_l.endswith("." + entry):
+                            return True
+                    return False
+
+                def _proxy_for_base_url(base_url: Any) -> str | None:
+                    parsed = urlparse(str(base_url or ""))
+                    if _host_in_no_proxy(parsed.hostname or "", parsed.port):
+                        return None
+                    if parsed.scheme == "http":
+                        return (
+                            os.environ.get("HTTP_PROXY")
+                            or os.environ.get("http_proxy")
+                            or os.environ.get("ALL_PROXY")
+                            or os.environ.get("all_proxy")
+                        )
+                    return (
+                        os.environ.get("HTTPS_PROXY")
+                        or os.environ.get("https_proxy")
+                        or os.environ.get("ALL_PROXY")
+                        or os.environ.get("all_proxy")
+                    )
+
                 _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
                 if hasattr(_socket, "TCP_KEEPIDLE"):
                     # Linux
@@ -4736,8 +4776,12 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                _transport_kwargs = {"socket_options": _sock_opts}
+                _proxy_url = _proxy_for_base_url(client_kwargs.get("base_url"))
+                if _proxy_url:
+                    _transport_kwargs["proxy"] = _proxy_url
                 client_kwargs["http_client"] = _httpx.Client(
-                    transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    transport=_httpx.HTTPTransport(**_transport_kwargs),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail

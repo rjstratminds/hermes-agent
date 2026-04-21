@@ -3,7 +3,9 @@ import os
 import sys
 from pathlib import Path
 
-from hermes_cli.env_loader import load_hermes_dotenv
+import pytest
+
+from hermes_cli.env_loader import load_hermes_dotenv, load_onecli_proxy_env
 
 
 def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
@@ -68,3 +70,43 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_load_onecli_proxy_env_overrides_stale_proxy_values(tmp_path, monkeypatch):
+    env_file = tmp_path / "hermes-m3-proxy.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "ONECLI_GATEWAY_URL=http://openclaw-gcp.tailc13f7e.ts.net:10255",
+                "HTTP_PROXY=http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10255",
+                "HTTPS_PROXY=http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10255",
+                "NO_PROXY=127.0.0.1,localhost,api.telegram.org",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9999")
+    loaded = load_onecli_proxy_env(env_file)
+
+    assert loaded == env_file
+    assert os.getenv("HTTP_PROXY") == "http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10255"
+    assert os.getenv("NO_PROXY") == "127.0.0.1,localhost,api.telegram.org"
+
+
+def test_load_onecli_proxy_env_rejects_api_port(tmp_path):
+    env_file = tmp_path / "hermes-m3-proxy.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "ONECLI_GATEWAY_URL=http://openclaw-gcp.tailc13f7e.ts.net:10254",
+                "HTTP_PROXY=http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10254",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="10255"):
+        load_onecli_proxy_env(env_file)

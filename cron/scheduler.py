@@ -694,13 +694,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
             if origin.get("chat_name"):
                 os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-        # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+        # Re-read .env, OneCli proxy env, and config.yaml fresh every run so
+        # provider/key/proxy changes take effect without a gateway restart.
+        from hermes_cli.env_loader import default_onecli_proxy_env_path, load_hermes_dotenv
+        load_hermes_dotenv(
+            hermes_home=_hermes_home,
+            onecli_proxy_env=default_onecli_proxy_env_path(),
+        )
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

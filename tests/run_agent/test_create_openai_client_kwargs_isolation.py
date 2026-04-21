@@ -35,3 +35,63 @@ def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
     assert kwargs == snapshot, (
         f"_create_openai_client mutated input kwargs; expected {snapshot}, got {kwargs}"
     )
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_passes_proxy_to_explicit_transport(mock_openai, monkeypatch):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    monkeypatch.setenv(
+        "HTTPS_PROXY",
+        "http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10255",
+    )
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,api.telegram.org")
+
+    with patch("httpx.HTTPTransport") as mock_transport:
+        mock_transport.return_value = MagicMock()
+        agent._create_openai_client(
+            {"api_key": "test-key", "base_url": "https://api.openai.com/v1"},
+            reason="test",
+            shared=False,
+        )
+
+    assert mock_transport.call_args.kwargs["proxy"] == (
+        "http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10255"
+    )
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_respects_no_proxy_for_explicit_transport(mock_openai, monkeypatch):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    monkeypatch.setenv(
+        "HTTPS_PROXY",
+        "http://x:test-token@openclaw-gcp.tailc13f7e.ts.net:10255",
+    )
+    monkeypatch.setenv("NO_PROXY", "api.openai.com")
+
+    with patch("httpx.HTTPTransport") as mock_transport:
+        mock_transport.return_value = MagicMock()
+        agent._create_openai_client(
+            {"api_key": "test-key", "base_url": "https://api.openai.com/v1"},
+            reason="test",
+            shared=False,
+        )
+
+    assert "proxy" not in mock_transport.call_args.kwargs

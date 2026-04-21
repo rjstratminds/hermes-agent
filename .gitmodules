@@ -1,3 +1,6 @@
 [submodule "tinker-atropos"]
 	path = tinker-atropos
 	url = https://github.com/nousresearch/tinker-atropos
+[submodule "hermes_m3"]
+	path = hermes_m3
+	url = https://github.com/rjstratminds/hermes_m3.git

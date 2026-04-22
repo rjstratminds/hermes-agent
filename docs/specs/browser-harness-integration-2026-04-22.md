@@ -139,6 +139,16 @@ The tool is hidden from the model when any of these fail.
 
 ## Setup (reproducible)
 
+Overlay seeds and the bootstrap script ship in `scripts/browser_harness/`:
+
+```text
+scripts/browser_harness/
+  helpers_hermes.py      ← seed copy (agent edits its runtime copy, not this)
+  README.md              ← seed copy
+  update_vendor.sh       ← vendor bump helper
+  setup_overlay.sh       ← idempotent bootstrap (overlay + Chromium launcher)
+```
+
 From a fresh machine:
 
 ```bash
@@ -146,20 +156,18 @@ From a fresh machine:
 mkdir -p ~/opt && git clone https://github.com/browser-use/browser-harness ~/opt/browser-harness
 cd ~/opt/browser-harness && uv sync
 
-# 2. Overlay
-mkdir -p ~/.hermes/browser_harness/skills
-git -C ~/opt/browser-harness rev-parse HEAD > ~/.hermes/browser_harness/vendor.pin
-# ...then copy helpers_hermes.py, README.md, update_vendor.sh from this repo's
-# scripts/browser_harness/ (TODO: move overlay seeds into the repo).
+# 2. Overlay + Chromium launch config (idempotent; Ubuntu snap wrapper + XDG override)
+scripts/browser_harness/setup_overlay.sh
 
-# 3. Chromium launch flag (Ubuntu snap example)
-# Install ~/.local/bin/chromium wrapper and
-# ~/.local/share/applications/chromium_chromium.desktop override.
-
-# 4. First-time attach: relaunch Chromium with the flag, then:
+# 3. First-time CDP attach
+# Launch Chromium (now auto-gets --remote-debugging-port=9222), then:
 cd ~/opt/browser-harness && uv run python run.py --doctor   # should show daemon FAIL
-uv run python run.py --setup                                # walks you through chrome://inspect checkbox if needed
+uv run python run.py --setup                                # walks chrome://inspect checkbox if needed
 ```
+
+`setup_overlay.sh` is safe to re-run; it never clobbers existing overlay
+files (preserves agent edits to `helpers_hermes.py`) and only installs the
+Chromium wrapper / desktop override when they don't already exist.
 
 ## Cloud / remote browsers (not yet wired)
 
@@ -173,9 +181,6 @@ contribution deferred).
 
 ## Open follow-ups
 
-- Move overlay seeds (`helpers_hermes.py`, `README.md`, `update_vendor.sh`)
-  into `hermes-agent/scripts/browser_harness/` so overlay setup is
-  reproducible from this repo alone.
 - Optional: surface `--doctor`, `--update`, `--setup` as a companion
   diagnostic tool, or leave them for the agent to invoke via `terminal`.
 - Cloud-mode wiring + `BROWSER_USE_API_KEY` sourcing from OneCLI.

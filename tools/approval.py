@@ -206,6 +206,7 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+_session_bh_self_edit: set[str] = set()
 _permanent_approved: set = set()
 
 # =========================================================================
@@ -326,6 +327,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _session_bh_self_edit.discard(session_key)
         _pending.pop(session_key, None)
         _gateway_queues.pop(session_key, None)
 
@@ -341,6 +343,35 @@ def is_session_yolo_enabled(session_key: str) -> bool:
 def is_current_session_yolo_enabled() -> bool:
     """Return True when the active approval session has YOLO bypass enabled."""
     return is_session_yolo_enabled(get_current_session_key(default=""))
+
+
+def enable_session_browser_harness_self_edit(session_key: str) -> None:
+    """Enable browser-harness helpers_hermes.py / skills edits for this session."""
+    if not session_key:
+        return
+    with _lock:
+        _session_bh_self_edit.add(session_key)
+
+
+def disable_session_browser_harness_self_edit(session_key: str) -> None:
+    """Disable browser-harness self-edit approval for this session."""
+    if not session_key:
+        return
+    with _lock:
+        _session_bh_self_edit.discard(session_key)
+
+
+def is_session_browser_harness_self_edit_enabled(session_key: str) -> bool:
+    """Return True when browser-harness self-edit is approved for this session."""
+    if not session_key:
+        return False
+    with _lock:
+        return session_key in _session_bh_self_edit
+
+
+def is_current_session_browser_harness_self_edit_enabled() -> bool:
+    """Return True when the active session has browser-harness self-edit approved."""
+    return is_session_browser_harness_self_edit_enabled(get_current_session_key(default=""))
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:

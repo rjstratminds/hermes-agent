@@ -186,11 +186,21 @@ input channel). Three hardenings are in place:
 2. **Gated self-editing.** Writes to
    `~/.hermes/browser_harness/helpers_hermes.py` and
    `~/.hermes/browser_harness/skills/` are blocked by
-   `agent/file_safety.py` unless `HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT`
-   is set to `1` / `true` / `yes`. This neutralizes the worst injection
-   scenario — a page convincing the agent to persist a backdoor by
-   appending a helper — while preserving the self-healing workflow as an
-   explicit user opt-in.
+   `agent/file_safety.py` by default. Two ways to opt in:
+   - **Process-scoped**: `HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT=1`
+   - **Session-scoped (recommended)**: `/bh-self-edit` in the CLI, in
+     any gateway platform that takes slash commands (Telegram, Discord,
+     Slack, etc.), flips the gate on for *just that session*. Sent again
+     to flip it off. Backed by in-memory state in
+     `tools/approval.py::_session_bh_self_edit`, so it doesn't persist
+     across Hermes restarts.
+
+   This neutralizes the worst injection scenario — a page convincing the
+   agent to persist a backdoor by appending a helper — while preserving
+   self-healing as an explicit user opt-in. The usual flow: agent
+   proposes a new primitive, writes blocked, agent asks the user "can I
+   extend helpers_hermes?", user replies `/bh-self-edit` in Telegram (or
+   whichever channel they're in), agent retries.
 
 3. **Audit log.** Every `browser_harness` call is appended as a JSON line
    to `~/.hermes/logs/browser_harness/YYYY-MM-DD.jsonl` (UTC day-rolled)

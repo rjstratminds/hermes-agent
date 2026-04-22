@@ -117,6 +117,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_config_gate="display.tool_progress_command"),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
+    CommandDef("bh-self-edit", "Toggle browser-harness self-edit (approve writes to helpers_hermes.py and skills/ for this session)",
+               "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),

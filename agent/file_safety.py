@@ -16,6 +16,21 @@ def _hermes_home_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _bh_self_edit_allowed() -> bool:
+    """Return True when browser-harness helpers_hermes.py / skills writes are
+    allowed. Default is denied; two ways to opt in:
+    - process-scoped: HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT=1/true/yes
+    - session-scoped: /bh-self-edit in the gateway (CLI or Telegram)
+    """
+    if os.environ.get("HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT", "").lower() in ("1", "true", "yes"):
+        return True
+    try:
+        from tools.approval import is_current_session_browser_harness_self_edit_enabled
+        return is_current_session_browser_harness_self_edit_enabled()
+    except Exception:
+        return False
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -42,7 +57,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # browser-harness overlay self-heals by appending to helpers_hermes.py.
     # Prompt injection via page content could weaponize this to persist a
     # backdoor across sessions, so require explicit opt-in.
-    if os.environ.get("HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT", "").lower() not in ("1", "true", "yes"):
+    if not _bh_self_edit_allowed():
         paths.append(str(hermes_home / "browser_harness" / "helpers_hermes.py"))
 
     return {os.path.realpath(p) for p in paths}
@@ -66,7 +81,7 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     # same property makes it the highest-value target for prompt injection
     # carried in page content. Gate it behind an explicit opt-in env var so
     # the agent must get user consent before extending its own primitives.
-    if os.environ.get("HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT", "").lower() not in ("1", "true", "yes"):
+    if not _bh_self_edit_allowed():
         hermes_home = _hermes_home_path()
         prefixes.append(str(hermes_home / "browser_harness" / "skills"))
 

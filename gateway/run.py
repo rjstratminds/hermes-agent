@@ -3363,11 +3363,13 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose"):
+            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose", "bh-self-edit"):
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "bh-self-edit":
+                    return await self._handle_bh_self_edit_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -3518,6 +3520,9 @@ class GatewayRunner:
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
+
+        if canonical == "bh-self-edit":
+            return await self._handle_bh_self_edit_command(event)
 
         if canonical == "model":
             return await self._handle_model_command(event)
@@ -6864,6 +6869,29 @@ class GatewayRunner:
         else:
             enable_session_yolo(session_key)
             return "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
+
+    async def _handle_bh_self_edit_command(self, event: MessageEvent) -> str:
+        """Handle /bh-self-edit — toggle browser-harness self-edit approval for this session only.
+
+        Writes to ~/.hermes/browser_harness/helpers_hermes.py and
+        ~/.hermes/browser_harness/skills/ are blocked by default (prompt-
+        injection hardening). Toggling this ON for the session lets the
+        agent extend its own browser-harness primitive surface.
+        """
+        from tools.approval import (
+            disable_session_browser_harness_self_edit,
+            enable_session_browser_harness_self_edit,
+            is_session_browser_harness_self_edit_enabled,
+        )
+
+        session_key = self._session_key_for_source(event.source)
+        current = is_session_browser_harness_self_edit_enabled(session_key)
+        if current:
+            disable_session_browser_harness_self_edit(session_key)
+            return "🔒 browser-harness self-edit **OFF** for this session — writes to helpers_hermes.py and skills/ are blocked."
+        else:
+            enable_session_browser_harness_self_edit(session_key)
+            return "♞ browser-harness self-edit **ON** for this session — the agent can extend helpers_hermes.py and author skills."
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

@@ -119,6 +119,12 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "browser_harness": {
+        "description": "Drive the user's real Chrome via browser-harness (CDP). Single self-healing tool: the agent writes Python calling helpers.py primitives, and adds missing ones to helpers_hermes.py.",
+        "tools": ["browser_harness"],
+        "includes": []
+    },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",

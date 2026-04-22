@@ -19,46 +19,58 @@ def _hermes_home_path() -> Path:
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
-    return {
-        os.path.realpath(p)
-        for p in [
-            os.path.join(home, ".ssh", "authorized_keys"),
-            os.path.join(home, ".ssh", "id_rsa"),
-            os.path.join(home, ".ssh", "id_ed25519"),
-            os.path.join(home, ".ssh", "config"),
-            str(hermes_home / ".env"),
-            os.path.join(home, ".bashrc"),
-            os.path.join(home, ".zshrc"),
-            os.path.join(home, ".profile"),
-            os.path.join(home, ".bash_profile"),
-            os.path.join(home, ".zprofile"),
-            os.path.join(home, ".netrc"),
-            os.path.join(home, ".pgpass"),
-            os.path.join(home, ".npmrc"),
-            os.path.join(home, ".pypirc"),
-            "/etc/sudoers",
-            "/etc/passwd",
-            "/etc/shadow",
-        ]
-    }
+    paths = [
+        os.path.join(home, ".ssh", "authorized_keys"),
+        os.path.join(home, ".ssh", "id_rsa"),
+        os.path.join(home, ".ssh", "id_ed25519"),
+        os.path.join(home, ".ssh", "config"),
+        str(hermes_home / ".env"),
+        os.path.join(home, ".bashrc"),
+        os.path.join(home, ".zshrc"),
+        os.path.join(home, ".profile"),
+        os.path.join(home, ".bash_profile"),
+        os.path.join(home, ".zprofile"),
+        os.path.join(home, ".netrc"),
+        os.path.join(home, ".pgpass"),
+        os.path.join(home, ".npmrc"),
+        os.path.join(home, ".pypirc"),
+        "/etc/sudoers",
+        "/etc/passwd",
+        "/etc/shadow",
+    ]
+
+    # browser-harness overlay self-heals by appending to helpers_hermes.py.
+    # Prompt injection via page content could weaponize this to persist a
+    # backdoor across sessions, so require explicit opt-in.
+    if os.environ.get("HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT", "").lower() not in ("1", "true", "yes"):
+        paths.append(str(hermes_home / "browser_harness" / "helpers_hermes.py"))
+
+    return {os.path.realpath(p) for p in paths}
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
-    return [
-        os.path.realpath(p) + os.sep
-        for p in [
-            os.path.join(home, ".ssh"),
-            os.path.join(home, ".aws"),
-            os.path.join(home, ".gnupg"),
-            os.path.join(home, ".kube"),
-            "/etc/sudoers.d",
-            "/etc/systemd",
-            os.path.join(home, ".docker"),
-            os.path.join(home, ".azure"),
-            os.path.join(home, ".config", "gh"),
-        ]
+    prefixes = [
+        os.path.join(home, ".ssh"),
+        os.path.join(home, ".aws"),
+        os.path.join(home, ".gnupg"),
+        os.path.join(home, ".kube"),
+        "/etc/sudoers.d",
+        "/etc/systemd",
+        os.path.join(home, ".docker"),
+        os.path.join(home, ".azure"),
+        os.path.join(home, ".config", "gh"),
     ]
+
+    # browser-harness overlay is agent-editable for self-healing, but that
+    # same property makes it the highest-value target for prompt injection
+    # carried in page content. Gate it behind an explicit opt-in env var so
+    # the agent must get user consent before extending its own primitives.
+    if os.environ.get("HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT", "").lower() not in ("1", "true", "yes"):
+        hermes_home = _hermes_home_path()
+        prefixes.append(str(hermes_home / "browser_harness" / "skills"))
+
+    return [os.path.realpath(p) + os.sep for p in prefixes]
 
 
 def get_safe_write_root() -> Optional[str]:

@@ -169,6 +169,48 @@ uv run python run.py --setup                                # walks chrome://ins
 files (preserves agent edits to `helpers_hermes.py`) and only installs the
 Chromium wrapper / desktop override when they don't already exist.
 
+## Prompt-injection mitigations
+
+This tool drives the user's real logged-in browser and the agent can
+self-edit its own primitive surface — both properties make prompt
+injection a realistic concern (any page the agent reads is an untrusted
+input channel). Three hardenings are in place:
+
+1. **Anti-injection framing in the tool description.** The
+   `browser_harness` schema explicitly tells the model that page content,
+   titles, alt text, form values, CDP responses, and screenshot OCR are
+   *data* — not instructions — and that money-moving, message-sending,
+   destructive, and permission-changing actions require user confirmation
+   regardless of what page text says.
+
+2. **Gated self-editing.** Writes to
+   `~/.hermes/browser_harness/helpers_hermes.py` and
+   `~/.hermes/browser_harness/skills/` are blocked by
+   `agent/file_safety.py` unless `HERMES_BROWSER_HARNESS_ALLOW_SELF_EDIT`
+   is set to `1` / `true` / `yes`. This neutralizes the worst injection
+   scenario — a page convincing the agent to persist a backdoor by
+   appending a helper — while preserving the self-healing workflow as an
+   explicit user opt-in.
+
+3. **Audit log.** Every `browser_harness` call is appended as a JSON line
+   to `~/.hermes/logs/browser_harness/YYYY-MM-DD.jsonl` (UTC day-rolled)
+   with timestamp, `BU_NAME`, code length + leading 2000 chars, timeout,
+   exit code, and stdout/stderr sizes. Failures to write the audit log
+   never fail the call.
+
+Additional mitigations not yet wired (recommended follow-ups):
+
+- **Dedicated Chromium profile** (not the user's daily driver) — biggest
+  containment win. `setup_overlay.sh` could grow a `--agent-profile` mode
+  that launches Chromium with `--user-data-dir=~/chromium-agent` so the
+  agent only has access to sites the user explicitly logs into there.
+- **Per-session CDP rate limiting** — integrate with Hermes' existing
+  tool-budget system so the adapter refuses after N calls or N bytes of
+  page content in a single session.
+- **Targeted-extraction preference** — enforced at review time rather
+  than runtime; the anti-injection framing already nudges toward
+  `document.querySelector(...)` over full-page `get_text()`.
+
 ## Cloud / remote browsers (not yet wired)
 
 `BROWSER_USE_API_KEY` is only needed for `start_remote_daemon(...)` —

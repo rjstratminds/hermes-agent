@@ -286,3 +286,48 @@ sensitivity recall, so MemOS remains the only confirmed source for that fact.
    within the current prefetch budget.
 5. Audit whether the source conversation containing the food-sensitivity fact
    was ever archived into MemPalace under the expected private scope.
+
+## Resolution
+
+Date: 2026-04-24
+
+The failure mode identified in "Key findings" as "returned empty/irrelevant
+results and failed silently" was confirmed and root-caused. The bug was not in
+the MemOS server, the endpoint selection, the proxy path, or the prefetch
+budget. It was a response-schema mismatch in the provider's parser.
+
+### Root cause
+
+`MemosPalaceProvider._extract_memos_hits` walked the MemOS `/product/search`
+response looking for each hit's rendered memory text under the keys `text` or
+`content`. The current MemOS product API returns that text under the key
+`memory` instead. Every hit matched neither branch, so the parser dropped it,
+and `memos_search` returned `{"success": true, "results": []}` even when the
+server had returned dozens of relevant hits.
+
+The same parser read `tags` and `info` only from the top level of each hit,
+but MemOS nests both under `metadata.*`. So even in the code paths where
+the hit text happened to land under `text`/`content`, tier/memory-type
+signals were invisible to `_rerank_memories`.
+
+Direct verification against the live server — same endpoint, same proxy env,
+same auth as the running gateway — returned 28 matching hits for the food-
+sensitivity query. The same response fed through the pre-fix extractor yielded
+zero hits; through the post-fix extractor it yielded the expected set with
+tags and `info.tier` surfaced.
+
+### Fix
+
+In `plugins/memos_palace/__init__.py`, `_extract_memos_hits` now accepts
+`text` or `content` or `memory` as the content key, and reads `tags` / `info`
+from `metadata.*` as a fallback to the top level. One short comment in the
+code records why all three keys are accepted (server schema drift that would
+otherwise silently drop every hit).
+
+### What this changes for the open questions
+
+Question 3 — "did MemOS return empty, time out, or fail" — is resolved:
+MemOS returned non-empty results, but the provider dropped them at parse
+time. Questions 1, 2, and 4 remain as written; question 5 (should personal-
+memory questions force broader fallback semantics) is no longer load-bearing
+for this specific incident, since the primary path now succeeds.

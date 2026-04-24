@@ -1,0 +1,3 @@
+name: memos_palace
+version: 0.1.0
+description: "Composite memory provider for memOS semantic memory plus MemPalace verbatim archive."

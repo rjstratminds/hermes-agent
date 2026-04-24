@@ -201,21 +201,32 @@ Not tracked in this repository:
 - `~/.hermes/onecli-backend/config.yaml`
 - `~/.hermes/bin/hermes-gateway-onecli`
 - `~/.config/systemd/user/hermes-gateway.service`
-- `~/.hermes/plugins/memos_palace/__init__.py`
 - installed Notion MCP package patches under `~/.hermes/notion-mcp/...`
 
-If these local operational changes should be reproducible from source, the next
-step is to move them into one or more tracked homes:
+Tracked since 2026-04-24:
+
+- `plugins/memos_palace/` — canonical source for the `memos_palace` memory
+  provider. Runtime still loads the copy at `~/.hermes/plugins/memos_palace/`;
+  this tracked copy exists so the plugin has a version-controlled home and
+  changes (such as the 2026-04-24 schema-drift fix in `_extract_memos_hits`)
+  survive the loss or rebuild of the local overlay. Switching the loader path
+  to prefer this tracked copy is a follow-up.
+
+If the remaining local operational changes should be reproducible from source,
+the next step is to move them into one or more tracked homes:
 
 1. vendor or wrap the Notion MCP transport patch
-2. move `memos_palace` into a tracked plugin repo or into `hermes-agent`
-3. check in the gateway/OneCLI wrapper and service-unit policy in a repo that
+2. check in the gateway/OneCLI wrapper and service-unit policy in a repo that
    owns local deployment
 
 ## Recommended follow-ups
 
-1. Create a tracked home for the `memos_palace` provider so memory behavior is
-   not defined only by mutable local files.
+1. ~~Create a tracked home for the `memos_palace` provider so memory behavior
+   is not defined only by mutable local files.~~ Done 2026-04-24:
+   `plugins/memos_palace/` is now version-controlled in this repository.
+   Remaining follow-up: switch the runtime loader to prefer the tracked copy
+   over `~/.hermes/plugins/memos_palace/`, or vendor the tracked copy into the
+   overlay at install time.
 2. Upstream or vendor the Notion transport fix so rebuilds do not discard it.
 3. Treat the OneCLI wrapper as the mandatory gateway launch path in deployment
    docs and templates.

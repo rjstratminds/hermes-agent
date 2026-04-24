@@ -1,0 +1,12 @@
+{
+  "memos_api_url": "https://YOUR-MEMOS-ENDPOINT",
+  "mempalace_mcp_url": "https://YOUR-MEMPALACE-MCP-ENDPOINT",
+  "owner_user_id": "you@example.com",
+  "memos_namespace": "platform:hermes/node:YOUR-NODE",
+  "memos_source": "hermes",
+  "memos_server": "YOUR-MEMOS-SERVER",
+  "memos_node": "YOUR-NODE",
+  "mempalace_wing": "agent_main",
+  "mempalace_room": "conversations",
+  "principals_path": "/Users/YOUR-USER/.hermes/memos_principals.json"
+}

@@ -206,8 +206,11 @@ class MemosPalaceProvider(MemoryProvider):
                     if self._prefetch_future is future:
                         self._prefetch_future = None
 
-        if self._prefetch_result:
-            return self._prefetch_result
+        with self._prefetch_lock:
+            cached_result = self._prefetch_result
+            self._prefetch_result = None
+        if cached_result:
+            return cached_result
 
         if not query.strip():
             return ""
@@ -573,6 +576,8 @@ class MemosPalaceProvider(MemoryProvider):
         content = _sanitize_for_storage(content)
         if not content:
             return {"success": False, "error": "empty content"}
+        if not self._memos_enabled:
+            return {"success": False, "error": "memOS not configured"}
         result = self._post_memos_messages(
             [{"role": "assistant", "content": _trim_text(content, 2000)}],
             memory_type=memory_type or "note",
@@ -907,4 +912,6 @@ class MemosPalaceProvider(MemoryProvider):
 
 
 def register(ctx) -> None:
-    ctx.register_memory_provider(MemosPalaceProvider())
+    register_memory_provider = getattr(ctx, "register_memory_provider", None)
+    if callable(register_memory_provider):
+        register_memory_provider(MemosPalaceProvider())

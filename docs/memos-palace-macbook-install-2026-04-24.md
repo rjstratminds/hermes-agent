@@ -105,3 +105,27 @@ The tracked source now lives in `plugins/memos_palace/`, but many current Hermes
 installs still load memory providers from `~/.hermes/plugins/`. Keep the target
 machine's overlay copy in sync with this tracked source until the runtime loader
 is changed to prefer the tracked copy.
+
+## OpenClaw parity note
+
+As of 2026-04-24, this provider is aligned with the live OpenClaw
+`memos-local-plugin` configuration on `openclaw-gcp` for the practical recall
+and promotion caps:
+
+- `memos_top_k = 5`
+- `memos_memory_limit = 5`
+- `memos_query_context_depth = 4`
+- `memos_max_item_chars = 220`
+- `memos_add_retries = 1`
+- `memos_include_assistant = false`
+- `memos_max_message_chars = 3500`
+- `memos_min_user_chars = 80`
+- `memos_skip_vague_adds = true`
+- `memos_skip_event_logs = true`
+- `memos_event_log_penalty = 0.35`
+- `memos_typed_memory_boost = 1.25`
+- `mempalace_limit = 4`
+- `mempalace_fallback_score_threshold = 0.62`
+
+The same alignment also adds vague-query expansion from recent turn context
+before memOS recall, which Hermes previously lacked.

@@ -211,6 +211,8 @@ Tracked since 2026-04-24:
   changes (such as the 2026-04-24 schema-drift fix in `_extract_memos_hits`)
   survive the loss or rebuild of the local overlay. Switching the loader path
   to prefer this tracked copy is a follow-up.
+- `docs/memos-palace-macbook-install-2026-04-24.md` — portable install/runbook
+  for carrying the same provider onto another machine.
 
 If the remaining local operational changes should be reproducible from source,
 the next step is to move them into one or more tracked homes:
@@ -234,6 +236,17 @@ the next step is to move them into one or more tracked homes:
    - stdio MCP sees sane proxy env
    - Notion MCP can complete a search
    - MemPalace HTTPS no longer fails certificate verification
+
+Update 2026-04-24:
+
+Hermes Spark's live `memos_palace` provider was aligned against the OpenClaw
+`memos-local-plugin` running on `openclaw-gcp`. The tracked provider now
+captures the same practical MemOS/MemPalace caps plus the previously-missing
+contextual-query expansion and OpenClaw-style reranking/fallback weights.
+The user service unit also now imports
+`/home/rj/.config/onecli/hermes-spark-proxy.env` so MemPalace HTTPS traffic is
+forced through the OneCLI proxy path rather than failing direct with
+`401 Unauthorized`.
 
 ## Hermes Spark client-node cutover status
 

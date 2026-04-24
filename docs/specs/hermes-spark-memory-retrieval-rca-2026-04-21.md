@@ -331,3 +331,31 @@ MemOS returned non-empty results, but the provider dropped them at parse
 time. Questions 1, 2, and 4 remain as written; question 5 (should personal-
 memory questions force broader fallback semantics) is no longer load-bearing
 for this specific incident, since the primary path now succeeds.
+
+## Follow-on alignment
+
+Date: 2026-04-24
+
+After the parser fix was in place, a second gap remained between Hermes Spark's
+`memos_palace` provider and the live OpenClaw `memos-local-plugin` running on
+`openclaw-gcp`. Hermes had copied only a subset of the OpenClaw memory-client
+behavior, which left recall and fallback behavior materially different even
+though both systems queried the same memOS authority.
+
+The parity sync on 2026-04-24 closed these gaps:
+
+- vague follow-up prompts now expand through recent turn context before memOS
+  search, matching OpenClaw's `queryContextDepth: 4` behavior
+- memOS recall/store caps now match the live OpenClaw config
+  (`topK=5`, `memoryLimitNumber=5`, `maxItemChars=220`,
+  `minUserChars=80`, `includeAssistant=false`)
+- reranking weights now match OpenClaw's live config
+  (`eventLogPenalty=0.35`, `typedMemoryBoost=1.25`)
+- MemPalace fallback now uses the same live knobs
+  (`mempalaceLimit=4`, `mempalaceFallbackScoreThreshold=0.62`) instead of the
+  older Hermes-only heuristic `len(memos_results) < 2`
+
+The MemPalace side also required a service-level environment fix on Hermes
+Spark: the gateway had to import the OneCLI proxy env file at startup so the
+provider would not send direct HTTPS requests with `Bearer placeholder`, which
+caused `401 Unauthorized` responses from the MCP endpoint.

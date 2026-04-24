@@ -20,6 +20,7 @@ This provider is deliberately non-blocking where possible:
 from __future__ import annotations
 
 import concurrent.futures
+from collections import deque
 import hashlib
 import json
 import logging
@@ -40,13 +41,30 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_MEMOS_SEARCH_TIMEOUT = 5.0
-_MEMOS_STORE_TIMEOUT = 15.0
+_MEMOS_SEARCH_TIMEOUT = 2.5
+_MEMOS_STORE_TIMEOUT = 120.0
 _MEMPALACE_TIMEOUT = 8.0
 _MIN_CONTENT_LENGTH = 50
 _RECENT_DEDUP_WINDOW_SECS = 300
 _RECENT_DEDUP_MAX = 64
 _PREFETCH_MAX_WAIT_SECS = 0.75
+_DEFAULT_MEMOS_TOP_K = 5
+_DEFAULT_MEMOS_MEMORY_LIMIT = 5
+_DEFAULT_MEMOS_QUERY_CONTEXT_DEPTH = 4
+_DEFAULT_MEMOS_MAX_ITEM_CHARS = 220
+_DEFAULT_MEMOS_ADD_RETRIES = 1
+_DEFAULT_MEMOS_DEDUP_ENABLED = True
+_DEFAULT_MEMOS_INCLUDE_ASSISTANT = False
+_DEFAULT_MEMOS_MAX_MESSAGE_CHARS = 3500
+_DEFAULT_MEMOS_MIN_USER_CHARS = 80
+_DEFAULT_MEMOS_SKIP_VAGUE_ADDS = True
+_DEFAULT_MEMOS_SKIP_EVENT_LOGS = True
+_DEFAULT_MEMOS_EVENT_LOG_PENALTY = 0.35
+_DEFAULT_MEMOS_TYPED_MEMORY_BOOST = 1.25
+_DEFAULT_MEMOS_RECENT_DEDUP_WINDOW_SECS = 900
+_DEFAULT_MEMPALACE_LIMIT = 4
+_DEFAULT_MEMPALACE_FALLBACK_SCORE_THRESHOLD = 0.62
+_DEFAULT_MEMPALACE_USE_ON_WEAK_COVERAGE = False
 
 _MEMORY_BLOCK_RE = re.compile(r"<(?:memory|mempalace|memory-context)>[\s\S]*?</(?:memory|mempalace|memory-context)>", re.I)
 _SYSTEM_NOTE_RE = re.compile(r"\[System note:[^\]]+\]\s*", re.I)
@@ -121,6 +139,34 @@ def _json_dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=True)
 
 
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class MemosPalaceProvider(MemoryProvider):
     def __init__(self) -> None:
         self._config: dict = {}
@@ -144,6 +190,7 @@ class MemosPalaceProvider(MemoryProvider):
 
         self._recent_hashes: dict[str, float] = {}
         self._recent_lock = threading.Lock()
+        self._recent_turns: dict[str, deque[dict[str, str]]] = {}
         self._mcp_initialized = False
         self._mcp_lock = threading.Lock()
         self._mempalace_proxy_url = ""
@@ -152,6 +199,60 @@ class MemosPalaceProvider(MemoryProvider):
     @property
     def name(self) -> str:
         return "memos_palace"
+
+    def _memos_top_k(self) -> int:
+        return max(1, _as_int(self._config.get("memos_top_k"), _DEFAULT_MEMOS_TOP_K))
+
+    def _memos_memory_limit(self) -> int:
+        return max(1, _as_int(self._config.get("memos_memory_limit"), _DEFAULT_MEMOS_MEMORY_LIMIT))
+
+    def _memos_query_context_depth(self) -> int:
+        return max(1, _as_int(self._config.get("memos_query_context_depth"), _DEFAULT_MEMOS_QUERY_CONTEXT_DEPTH))
+
+    def _memos_max_item_chars(self) -> int:
+        return max(80, _as_int(self._config.get("memos_max_item_chars"), _DEFAULT_MEMOS_MAX_ITEM_CHARS))
+
+    def _memos_add_retries(self) -> int:
+        return max(0, _as_int(self._config.get("memos_add_retries"), _DEFAULT_MEMOS_ADD_RETRIES))
+
+    def _memos_dedup_enabled(self) -> bool:
+        return _as_bool(self._config.get("memos_dedup_enabled"), _DEFAULT_MEMOS_DEDUP_ENABLED)
+
+    def _memos_include_assistant(self) -> bool:
+        return _as_bool(self._config.get("memos_include_assistant"), _DEFAULT_MEMOS_INCLUDE_ASSISTANT)
+
+    def _memos_max_message_chars(self) -> int:
+        return max(200, _as_int(self._config.get("memos_max_message_chars"), _DEFAULT_MEMOS_MAX_MESSAGE_CHARS))
+
+    def _memos_min_user_chars(self) -> int:
+        return max(1, _as_int(self._config.get("memos_min_user_chars"), _DEFAULT_MEMOS_MIN_USER_CHARS))
+
+    def _memos_skip_vague_adds(self) -> bool:
+        return _as_bool(self._config.get("memos_skip_vague_adds"), _DEFAULT_MEMOS_SKIP_VAGUE_ADDS)
+
+    def _memos_skip_event_logs(self) -> bool:
+        return _as_bool(self._config.get("memos_skip_event_logs"), _DEFAULT_MEMOS_SKIP_EVENT_LOGS)
+
+    def _memos_event_log_penalty(self) -> float:
+        return max(0.1, _as_float(self._config.get("memos_event_log_penalty"), _DEFAULT_MEMOS_EVENT_LOG_PENALTY))
+
+    def _memos_typed_memory_boost(self) -> float:
+        return max(1.0, _as_float(self._config.get("memos_typed_memory_boost"), _DEFAULT_MEMOS_TYPED_MEMORY_BOOST))
+
+    def _memos_recent_dedup_window_secs(self) -> int:
+        return max(0, _as_int(self._config.get("memos_recent_dedup_window_secs"), _DEFAULT_MEMOS_RECENT_DEDUP_WINDOW_SECS))
+
+    def _mempalace_limit(self) -> int:
+        return max(1, _as_int(self._config.get("mempalace_limit"), _DEFAULT_MEMPALACE_LIMIT))
+
+    def _mempalace_fallback_score_threshold(self) -> float:
+        return max(0.0, _as_float(self._config.get("mempalace_fallback_score_threshold"), _DEFAULT_MEMPALACE_FALLBACK_SCORE_THRESHOLD))
+
+    def _mempalace_use_on_weak_coverage(self) -> bool:
+        return _as_bool(self._config.get("mempalace_use_on_weak_coverage"), _DEFAULT_MEMPALACE_USE_ON_WEAK_COVERAGE)
+
+    def _context_session_id(self, session_id: str = "") -> str:
+        return session_id or self._session_id or "default"
 
     def is_available(self) -> bool:
         cfg = _load_config()
@@ -232,6 +333,17 @@ class MemosPalaceProvider(MemoryProvider):
                 self._build_recall_context, query, session_id or self._session_id
             )
 
+    def _remember_turn_context(self, user_text: str, assistant_text: str, *, session_id: str = "") -> None:
+        sid = self._context_session_id(session_id)
+        history = self._recent_turns.get(sid)
+        if history is None:
+            history = deque(maxlen=max(2, self._memos_query_context_depth() * 2))
+            self._recent_turns[sid] = history
+        if user_text.strip():
+            history.append({"role": "user", "text": user_text.strip()})
+        if assistant_text.strip():
+            history.append({"role": "assistant", "text": assistant_text.strip()})
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         if self._agent_context not in ("primary", ""):
             return
@@ -241,6 +353,7 @@ class MemosPalaceProvider(MemoryProvider):
             return
         if self._is_recent_duplicate(user_text, assistant_text):
             return
+        self._remember_turn_context(user_text, assistant_text, session_id=session_id)
         payload = {
             "user": user_text,
             "assistant": assistant_text,
@@ -248,6 +361,44 @@ class MemosPalaceProvider(MemoryProvider):
             "ts": time.time(),
         }
         self._write_queue.put(payload)
+
+    def _is_vague_query(self, text: str) -> bool:
+        stripped = re.sub(r"[.,!?;:'\"()\s]+", " ", text or "").strip()
+        words = [word for word in stripped.split() if len(word) > 1]
+        if len(words) < 4:
+            return True
+        return bool(
+            re.fullmatch(
+                r"(yes|no|ok|okay|sure|yep|nope|yeah|nah|go ahead|do it|please|thanks|thank you|got it|sounds good|let's do it|makes sense|agreed|exactly|right|correct)",
+                stripped,
+                re.I,
+            )
+        )
+
+    def _build_contextual_query(self, query: str, session_id: str) -> str:
+        raw_query = (query or "").strip()
+        if not raw_query or not self._is_vague_query(raw_query):
+            return raw_query
+        history = self._recent_turns.get(self._context_session_id(session_id))
+        if not history:
+            return raw_query
+        context_parts: list[str] = []
+        remaining = self._memos_query_context_depth()
+        for item in reversed(history):
+            if remaining <= 0:
+                break
+            text = (item.get("text") or "").strip()
+            if not text or text.startswith("[MemOS"):
+                continue
+            if item.get("role") == "assistant" and len(text) > 200:
+                text = text[:200]
+            if self._is_vague_query(text):
+                continue
+            context_parts.insert(0, text)
+            remaining -= 1
+        if not context_parts:
+            return raw_query
+        return "\n".join(context_parts + [raw_query])
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -438,27 +589,30 @@ class MemosPalaceProvider(MemoryProvider):
     def _build_recall_context(self, query: str, session_id: str) -> str:
         blocks: List[str] = []
         memos_results: List[dict] = []
+        top_k = self._memos_top_k()
+        memory_limit = self._memos_memory_limit()
+        search_query = self._build_contextual_query(query, session_id)
         if self._memos_enabled:
             try:
-                memos_results = self._memos_search(query, 5)
+                memos_results = self._memos_search(search_query, top_k)
             except Exception as exc:
                 logger.debug("memos_palace: memOS recall failed: %s", exc)
                 memos_results = []
 
         if memos_results:
-            body = "\n".join(f"{i + 1}. {item['text']}" for i, item in enumerate(memos_results[:5]))
+            body = "\n".join(f"{i + 1}. {item['text']}" for i, item in enumerate(memos_results[:memory_limit]))
             blocks.append(f"<memory>\nMemOS recall:\n{body}\n</memory>")
 
         if self._mempalace_enabled and self._should_use_mempalace_recall(query, memos_results):
             try:
-                mempalace_results = self._mempalace_search(query, 3)
+                mempalace_results = self._mempalace_search(search_query, self._mempalace_limit())
             except Exception as exc:
                 logger.debug("memos_palace: mempalace recall failed: %s", exc)
                 mempalace_results = []
             if mempalace_results:
                 body = "\n".join(
-                    f"{i + 1}. {_trim_text(item.get('text', ''), 500)} [{item.get('wing', 'agent_main')}/{item.get('room', 'conversations')}]"
-                    for i, item in enumerate(mempalace_results[:3])
+                    f"{i + 1}. {_trim_text(item.get('text', ''), self._memos_max_item_chars())} [{item.get('wing', 'agent_main')}/{item.get('room', 'conversations')}]"
+                    for i, item in enumerate(mempalace_results[: self._mempalace_limit()])
                 )
                 blocks.append(
                     "<mempalace>\n"
@@ -487,6 +641,8 @@ class MemosPalaceProvider(MemoryProvider):
         combined = f"{user_text}\n\n{assistant_text}".strip()
         if len(combined) < _MIN_CONTENT_LENGTH:
             return False
+        if self._memos_skip_vague_adds() and len((user_text or "").strip()) < self._memos_min_user_chars():
+            return False
 
         score = 0
         if _EXPLICIT_MEMORY_RE.search(combined):
@@ -513,13 +669,19 @@ class MemosPalaceProvider(MemoryProvider):
             or _EVIDENCE_INTENT_RE.search(query)
         ):
             return True
-        return len(memos_results) < 2
+        return self._mempalace_use_on_weak_coverage() and self._memos_coverage_looks_weak(memos_results)
+
+    def _memos_coverage_looks_weak(self, memos_results: List[dict]) -> bool:
+        if not memos_results:
+            return True
+        top_score = float(memos_results[0].get("score", 0.0) or 0.0)
+        return top_score < self._mempalace_fallback_score_threshold()
 
     def _is_recent_duplicate(self, user_text: str, assistant_text: str) -> bool:
         digest = hashlib.sha256(f"{user_text[:200]}\n{assistant_text[:200]}".encode("utf-8")).hexdigest()
         now = time.time()
         with self._recent_lock:
-            stale = [k for k, ts in self._recent_hashes.items() if now - ts > _RECENT_DEDUP_WINDOW_SECS]
+            stale = [k for k, ts in self._recent_hashes.items() if now - ts > self._memos_recent_dedup_window_secs()]
             for key in stale:
                 self._recent_hashes.pop(key, None)
             if digest in self._recent_hashes:
@@ -549,6 +711,7 @@ class MemosPalaceProvider(MemoryProvider):
     def _memos_search(self, query: str, top_k: int = 5) -> List[dict]:
         if not self._memos_enabled or not query.strip():
             return []
+        top_k = max(1, min(top_k, self._memos_memory_limit()))
         payload = {
             "query": query,
             "user_id": self._owner_user_id(),
@@ -561,10 +724,11 @@ class MemosPalaceProvider(MemoryProvider):
             "include_skill_memory": True,
             "skill_mem_top_k": 2,
             "mode": "fast",
-            "dedup": "mmr",
             "relativity": 0.15,
             "session_id": self._session_id or None,
         }
+        if self._memos_dedup_enabled():
+            payload["dedup"] = "mmr"
         url = self._config["memos_api_url"].rstrip("/") + "/product/search"
         with httpx.Client(timeout=_MEMOS_SEARCH_TIMEOUT) as client:
             response = client.post(url, headers=self._memos_headers(), json=payload)
@@ -579,7 +743,7 @@ class MemosPalaceProvider(MemoryProvider):
         if not self._memos_enabled:
             return {"success": False, "error": "memOS not configured"}
         result = self._post_memos_messages(
-            [{"role": "assistant", "content": _trim_text(content, 2000)}],
+            [{"role": "assistant", "content": _trim_text(content, self._memos_max_message_chars())}],
             memory_type=memory_type or "note",
             tier=tier or "",
         )
@@ -600,11 +764,13 @@ class MemosPalaceProvider(MemoryProvider):
 
     def _store_memos_turn(self, user_text: str, assistant_text: str) -> None:
         memory_type, tier = self._infer_memory_shape(user_text, assistant_text)
+        if self._memos_skip_event_logs() and memory_type in {"event_log", "conversation"}:
+            return
         messages = []
         if user_text:
-            messages.append({"role": "user", "content": _trim_text(user_text, 2000)})
-        if assistant_text:
-            messages.append({"role": "assistant", "content": _trim_text(assistant_text, 2000)})
+            messages.append({"role": "user", "content": _trim_text(user_text, self._memos_max_message_chars())})
+        if assistant_text and self._memos_include_assistant():
+            messages.append({"role": "assistant", "content": _trim_text(assistant_text, self._memos_max_message_chars())})
         if messages:
             self._post_memos_messages(messages, memory_type=memory_type, tier=tier)
 
@@ -636,10 +802,21 @@ class MemosPalaceProvider(MemoryProvider):
             "session_id": self._session_id or None,
         }
         url = self._config["memos_api_url"].rstrip("/") + "/product/add"
-        with httpx.Client(timeout=_MEMOS_STORE_TIMEOUT) as client:
-            response = client.post(url, headers=self._memos_headers(), json=payload)
-            response.raise_for_status()
-            return response.json()
+        attempts = self._memos_add_retries() + 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                with httpx.Client(timeout=_MEMOS_STORE_TIMEOUT) as client:
+                    response = client.post(url, headers=self._memos_headers(), json=payload)
+                    response.raise_for_status()
+                    return response.json()
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 >= attempts:
+                    raise
+        if last_error is not None:
+            raise last_error
+        return {}
 
     def _store_mempalace_turn(self, user_text: str, assistant_text: str, *, session_id: str) -> None:
         clean_user = _sanitize_for_storage(user_text)
@@ -710,7 +887,7 @@ class MemosPalaceProvider(MemoryProvider):
                     )
                     hits.append({
                         "id": str(node.get("id", "") or ""),
-                        "text": _trim_text(text.strip(), 500),
+                        "text": _trim_text(text.strip(), self._memos_max_item_chars()),
                         "metadata": metadata,
                         "tags": tags,
                         "info": info,
@@ -760,9 +937,9 @@ class MemosPalaceProvider(MemoryProvider):
                         memory_type = tag.split(":", 1)[1]
                         break
             if memory_type in {"event_log", "conversation"}:
-                score *= 0.6
+                score *= self._memos_event_log_penalty()
             elif memory_type:
-                score *= 1.1
+                score *= self._memos_typed_memory_boost()
 
             if not tags and not tier:
                 score *= 0.85

@@ -265,6 +265,29 @@ class TestBuildFromSessions:
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
 
+    def test_whatsapp_includes_allowed_dm_numbers(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "richard": {
+                "origin": {
+                    "platform": "whatsapp",
+                    "chat_id": "48391413329943@lid",
+                    "chat_name": "Richard Jhang",
+                },
+                "chat_type": "dm",
+            },
+        })
+
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "WHATSAPP_ALLOWED_USERS": "+14159626063,+16505059924,14156900638",
+        }):
+            entries = _build_from_sessions("whatsapp")
+
+        names = {entry["name"]: entry["id"] for entry in entries}
+        assert names["Richard Jhang"] == "48391413329943@lid"
+        assert names["Summer Kim"] == "+16505059924"
+        assert names["Noah Jhang"] == "+14156900638"
+
 
 class TestFormatDirectoryForDisplay:
     def test_empty_directory(self, tmp_path):

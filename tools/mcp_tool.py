@@ -3237,7 +3237,8 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
         return repaired
 
-    normalized = _rewrite_local_refs(schema)
+    normalized = _sanitize_mcp_json_schema(schema)
+    normalized = _rewrite_local_refs(normalized)
     normalized = _strip_nullable_union(normalized)
     normalized = _repair_object_shape(normalized)
 
@@ -3248,6 +3249,41 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         normalized = {**normalized, "properties": {}}
 
     return normalized
+
+
+def _is_openai_compatible_json_schema_pattern(pattern: str) -> bool:
+    """Return False for regex dialect features rejected by OpenAI tools."""
+    if "\\p{" in pattern or "\\P{" in pattern:
+        return False
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    return True
+
+
+def _sanitize_mcp_json_schema(value):
+    """Return an OpenAI-tool-compatible copy of an MCP JSON Schema value.
+
+    MCP servers may advertise schemas using JSON Schema regex dialect details
+    that are not accepted by OpenAI function/tool validation. Dropping only
+    invalid ``pattern`` values preserves the rest of the schema and keeps the
+    provider request from failing before the model can answer.
+    """
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            if key == "pattern" and isinstance(item, str):
+                if _is_openai_compatible_json_schema_pattern(item):
+                    cleaned[key] = item
+                else:
+                    logger.warning("Dropping OpenAI-incompatible MCP JSON Schema pattern: %r", item)
+                continue
+            cleaned[key] = _sanitize_mcp_json_schema(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_mcp_json_schema(item) for item in value]
+    return value
 
 
 def sanitize_mcp_name_component(value: str) -> str:

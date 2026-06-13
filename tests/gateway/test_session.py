@@ -194,6 +194,39 @@ class TestBuildSessionContextPrompt:
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
 
+    def test_telegram_prompt_distinguishes_current_reply_target_from_home_channel(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="fake-token",
+                    home_channel=HomeChannel(
+                        platform=Platform.TELEGRAM,
+                        chat_id="-1003759914887",
+                        thread_id="14083",
+                        name="Eve Engineering",
+                    ),
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003726678397",
+            chat_name="Current Group",
+            chat_type="group",
+            thread_id="123",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Current reply target:**" in prompt
+        assert "chat_id: `-1003726678397`" in prompt
+        assert "thread_id: `123`" in prompt
+        assert "explicit target: `telegram:-1003726678397:123`" in prompt
+        assert "not a Home Channel" in prompt
+        assert "Eve Engineering" in prompt
+        assert "-1003759914887" in prompt
+
     def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
         config = GatewayConfig(
             platforms={

@@ -844,6 +844,8 @@ Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 Because exported environment state persists, activate a virtualenv or export setup variables once per session; do not re-source the same environment before every command unless a command proves the shell state was reset.
 
+Artifact delivery: When generating a file the user expects as a Telegram/WhatsApp/chat attachment, write or copy the final file to /home/rj/.hermes/out/<filename> and return MEDIA:/home/rj/.hermes/out/<filename>. Do not use /tmp or /root/.hermes/cache for final MEDIA paths from Docker; the gateway sends attachments from the host and cannot read container-only paths.
+
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
 Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
   (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.

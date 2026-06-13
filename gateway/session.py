@@ -399,6 +399,32 @@ def build_session_context_prompt(
 
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
 
+    # Current delivery target.  Keep this close to the home-channel section so
+    # the agent can distinguish "reply here" from "send to a configured home
+    # destination" when using explicit delivery tools.
+    if context.source.platform != Platform.LOCAL and context.source.chat_id:
+        current_chat_id = (
+            _hash_chat_id(context.source.chat_id)
+            if redact_pii
+            else context.source.chat_id
+        )
+        lines.append("")
+        lines.append("**Current reply target:**")
+        lines.append(f"  - chat_id: `{current_chat_id}`")
+        if context.source.thread_id:
+            lines.append(f"  - thread_id: `{context.source.thread_id}`")
+        if not redact_pii:
+            explicit_target = f"{context.source.platform.value}:{context.source.chat_id}"
+            if context.source.thread_id:
+                explicit_target += f":{context.source.thread_id}"
+            lines.append(f"  - explicit target: `{explicit_target}`")
+        lines.append(
+            "  - For ordinary replies and attachments to this conversation, put "
+            "`MEDIA:/absolute/path` in the final response. Use explicit send tools "
+            "only when the user asks to send somewhere else or a host-side retry "
+            "is required; then use this current reply target, not a Home Channel."
+        )
+
     # Home channels
     if context.home_channels:
         lines.append("")

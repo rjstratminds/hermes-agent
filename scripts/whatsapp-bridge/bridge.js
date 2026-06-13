@@ -28,8 +28,13 @@ import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
+import { createRequire } from 'module';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+
+const require = createRequire(import.meta.url);
+const QRCode = require('qrcode-terminal/vendor/QRCode');
+const QRErrorCorrectLevel = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel');
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -68,6 +73,8 @@ try {
     .digest('hex')
     .slice(0, 16);
 } catch {}
+const LATEST_QR_PATH = path.join(SESSION_DIR, 'latest-qr.txt');
+const LATEST_QR_SVG_PATH = path.join(SESSION_DIR, 'latest-qr.svg');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -144,6 +151,23 @@ function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+function normalizeOutgoingChatId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.includes('@')) return normalizeWhatsAppId(raw);
+
+  const phone = raw.replace(/^\+/, '').replace(/\D/g, '');
+  if (!phone) return raw;
+
+  try {
+    const mapped = JSON.parse(readFileSync(path.join(SESSION_DIR, `lid-mapping-${phone}.json`), 'utf8'));
+    const lid = String(mapped || '').replace(/\D/g, '');
+    if (lid) return `${lid}@lid`;
+  } catch {}
+
+  return `${phone}@s.whatsapp.net`;
+}
+
 function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
@@ -164,6 +188,41 @@ function getContextInfo(messageContent) {
     }
   }
   return {};
+}
+
+function writeLatestQrFiles(qr) {
+  latestQr = qr;
+  writeFileSync(LATEST_QR_PATH, `${qr}\n`, { mode: 0o600 });
+
+  const qrcodeModel = new QRCode(-1, QRErrorCorrectLevel.L);
+  qrcodeModel.addData(qr);
+  qrcodeModel.make();
+
+  const moduleCount = qrcodeModel.getModuleCount();
+  const quietZone = 4;
+  const cellSize = 10;
+  const size = (moduleCount + quietZone * 2) * cellSize;
+  const rects = [];
+
+  for (let row = 0; row < moduleCount; row++) {
+    for (let col = 0; col < moduleCount; col++) {
+      if (!qrcodeModel.isDark(row, col)) continue;
+      const x = (col + quietZone) * cellSize;
+      const y = (row + quietZone) * cellSize;
+      rects.push(`<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}"/>`);
+    }
+  }
+
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`,
+    '<rect width="100%" height="100%" fill="#fff"/>',
+    '<g fill="#000">',
+    ...rects,
+    '</g>',
+    '</svg>',
+    '',
+  ].join('\n');
+  writeFileSync(LATEST_QR_SVG_PATH, svg, { mode: 0o600 });
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -196,6 +255,7 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let latestQr = null;
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -224,6 +284,11 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      try {
+        writeLatestQrFiles(qr);
+      } catch (err) {
+        console.error('[bridge] Failed to write latest QR files:', err.message);
+      }
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
@@ -247,6 +312,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      latestQr = null;
       console.log('✅ WhatsApp connected!');
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
@@ -516,7 +582,8 @@ app.post('/send', async (req, res) => {
   }
 
   const { chatId, message, replyTo } = req.body;
-  if (!chatId || !message) {
+  const targetChatId = normalizeOutgoingChatId(chatId);
+  if (!targetChatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
 
@@ -524,7 +591,7 @@ app.post('/send', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+      const sent = await sendWithTimeout(targetChatId, { text: chunks[i] });
       trackSentMessageId(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
@@ -536,6 +603,7 @@ app.post('/send', async (req, res) => {
       success: true,
       messageId: messageIds[messageIds.length - 1],
       messageIds,
+      chatId: targetChatId,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -549,19 +617,20 @@ app.post('/edit', async (req, res) => {
   }
 
   const { chatId, messageId, message } = req.body;
-  if (!chatId || !messageId || !message) {
+  const targetChatId = normalizeOutgoingChatId(chatId);
+  if (!targetChatId || !messageId || !message) {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
 
   try {
-    const key = { id: messageId, fromMe: true, remoteJid: chatId };
+    const key = { id: messageId, fromMe: true, remoteJid: targetChatId };
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    await sendWithTimeout(targetChatId, { text: chunks[0], edit: key });
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+        const sent = await sendWithTimeout(targetChatId, { text: chunks[i] });
         trackSentMessageId(sent);
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
@@ -570,7 +639,7 @@ app.post('/edit', async (req, res) => {
       }
     }
 
-    res.json({ success: true, messageIds });
+    res.json({ success: true, messageIds, chatId: targetChatId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -602,7 +671,8 @@ app.post('/send-media', async (req, res) => {
   }
 
   const { chatId, filePath, mediaType, caption, fileName } = req.body;
-  if (!chatId || !filePath) {
+  const targetChatId = normalizeOutgoingChatId(chatId);
+  if (!targetChatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
 
@@ -662,11 +732,11 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sendWithTimeout(chatId, msgPayload);
+    const sent = await sendWithTimeout(targetChatId, msgPayload);
 
     trackSentMessageId(sent);
 
-    res.json({ success: true, messageId: sent?.key?.id });
+    res.json({ success: true, messageId: sent?.key?.id, chatId: targetChatId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -679,10 +749,11 @@ app.post('/typing', async (req, res) => {
   }
 
   const { chatId } = req.body;
-  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  const targetChatId = normalizeOutgoingChatId(chatId);
+  if (!targetChatId) return res.status(400).json({ error: 'chatId required' });
 
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
+    await sock.sendPresenceUpdate('composing', targetChatId);
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
@@ -714,6 +785,26 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// Leave a WhatsApp group. This is intentionally narrow and local-only through
+// the bridge's existing loopback bind plus Host-header guard.
+app.post('/leave-group', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId } = req.body;
+  if (!chatId || !String(chatId).endsWith('@g.us')) {
+    return res.status(400).json({ error: 'chatId ending in @g.us is required' });
+  }
+
+  try {
+    await sock.groupLeave(String(chatId));
+    res.json({ success: true, chatId: String(chatId) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -721,6 +812,19 @@ app.get('/health', (req, res) => {
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
+    hasQr: Boolean(latestQr),
+  });
+});
+
+// Latest QR payload for rendering outside the bridge log.
+app.get('/qr', (req, res) => {
+  if (!latestQr) {
+    return res.status(404).json({ error: 'No active QR payload' });
+  }
+  res.json({
+    qr: latestQr,
+    path: LATEST_QR_PATH,
+    svgPath: LATEST_QR_SVG_PATH,
   });
 });
 

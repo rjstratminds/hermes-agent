@@ -5093,6 +5093,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring invalid Telegram thread id: %r", self.name, value)
         return ignored
 
+    def _telegram_mention_only_chats(self) -> set[str]:
+        """Chats/topics where only a real @bot mention may trigger processing."""
+        raw = self.config.extra.get("mention_only_chats")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_MENTION_ONLY_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
@@ -5197,6 +5206,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 mentioned_bot_usernames.add(match.group(1).lower())
 
         return mentioned_bot_usernames
+
+    def _message_chat_keys(self, message: Message) -> set[str]:
+        chat_id = str(getattr(getattr(message, "chat", None), "id", "")).strip()
+        if not chat_id:
+            return set()
+        keys = {chat_id}
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id is not None:
+            thread_text = str(thread_id).strip()
+            if thread_text:
+                keys.add(f"{chat_id}:topic:{thread_text}")
+        return keys
+
+    def _message_in_mention_only_chat(self, message: Message) -> bool:
+        configured = self._telegram_mention_only_chats()
+        return bool(configured and self._message_chat_keys(message) & configured)
 
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
@@ -5532,6 +5557,7 @@ class TelegramAdapter(BasePlatformAdapter):
         DMs remain unrestricted. Group/supergroup messages are accepted when:
         - the chat passes the ``allowed_chats`` whitelist (when set), or
           ``guest_mode`` is enabled and the bot is explicitly mentioned
+        - the chat/topic is in ``mention_only_chats`` and the bot is @mentioned
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message replies to the bot
@@ -5592,6 +5618,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if guest_mention:
             return True
+        if self._message_in_mention_only_chat(message):
+            return self._message_mentions_bot(message)
         if chat_id_str in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():

@@ -28,6 +28,7 @@ def _reset_signal_scheduler():
 from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
+    _missing_media_warning,
     _parse_target_ref,
     _send_matrix_via_adapter,
     _send_signal,
@@ -588,7 +589,15 @@ class TestSendTelegramMediaDelivery:
 
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
+        assert "/home/rj/.hermes/out/does-not-exist.png" in result["warnings"][0]
         bot.send_message.assert_not_awaited()
+
+    def test_missing_media_warning_points_docker_paths_to_shared_out_dir(self):
+        warning = _missing_media_warning("/root/.hermes/cache/report.pdf")
+
+        assert "Media file not found" in warning
+        assert "/home/rj/.hermes/out/report.pdf" in warning
+        assert "cannot read Docker-only" in warning
 
 
 # ---------------------------------------------------------------------------

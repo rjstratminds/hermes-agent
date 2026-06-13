@@ -521,7 +521,14 @@ PLATFORM_HINTS = {
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
-        "bubbles, and videos (.mp4) play inline. You can also include image "
+        "bubbles, and videos (.mp4) play inline. If you generate the file "
+        "with the terminal tool, write or copy the final attachment to "
+        "/home/rj/.hermes/out/<filename> and use that path in MEDIA:; Docker "
+        "/tmp and /root/.hermes paths are not visible to Telegram delivery. "
+        "When attaching a file to the current Telegram conversation, prefer "
+        "putting the MEDIA line in your final response; do not use send_message "
+        "unless the user explicitly asks you to send to a different chat. "
+        "You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
     "discord": (

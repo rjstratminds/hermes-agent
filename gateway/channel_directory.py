@@ -8,6 +8,8 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +19,13 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+
+_KNOWN_WHATSAPP_CONTACTS = {
+    "+14159626063": "Richard Jhang",
+    "+16505059924": "Summer Kim",
+    "+14156900638": "Noah Jhang",
+    "+16467242776": "Eve Ai",
+}
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -211,31 +220,108 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     """Pull known channels/contacts from sessions.json origin data."""
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
-    if not sessions_path.exists():
-        return []
 
     entries = []
-    try:
-        with open(sessions_path, encoding="utf-8") as f:
-            data = json.load(f)
+    if sessions_path.exists():
+        try:
+            with open(sessions_path, encoding="utf-8") as f:
+                data = json.load(f)
 
-        seen_ids = set()
-        for _key, session in data.items():
-            origin = session.get("origin") or {}
-            if origin.get("platform") != platform_name:
-                continue
-            entry_id = _session_entry_id(origin)
-            if not entry_id or entry_id in seen_ids:
-                continue
-            seen_ids.add(entry_id)
-            entries.append({
-                "id": entry_id,
-                "name": _session_entry_name(origin),
-                "type": session.get("chat_type", "dm"),
-                "thread_id": origin.get("thread_id"),
-            })
-    except Exception as e:
-        logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
+            seen_ids = set()
+            for _key, session in data.items():
+                origin = session.get("origin") or {}
+                if origin.get("platform") != platform_name:
+                    continue
+                entry_id = _session_entry_id(origin)
+                if not entry_id or entry_id in seen_ids:
+                    continue
+                seen_ids.add(entry_id)
+                entries.append({
+                    "id": entry_id,
+                    "name": _session_entry_name(origin),
+                    "type": session.get("chat_type", "dm"),
+                    "thread_id": origin.get("thread_id"),
+                })
+        except Exception as e:
+            logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
+
+    if platform_name == "whatsapp":
+        entries = _include_allowed_whatsapp_dms(entries)
+
+    return entries
+
+
+def _normalize_e164(value: str) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw or raw == "*":
+        return None
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return None
+    if len(digits) == 10:
+        digits = f"1{digits}"
+    return f"+{digits}"
+
+
+def _whatsapp_contact_labels() -> Dict[str, str]:
+    labels = dict(_KNOWN_WHATSAPP_CONTACTS)
+    raw = os.getenv("WHATSAPP_CONTACT_LABELS", "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    phone = _normalize_e164(key)
+                    name = str(value or "").strip()
+                    if phone and name:
+                        labels[phone] = name
+        except Exception:
+            logger.debug("Channel directory: failed to parse WHATSAPP_CONTACT_LABELS", exc_info=True)
+    return labels
+
+
+def _read_dotenv_value(key: str) -> str:
+    env_path = get_hermes_home() / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                name, value = stripped.split("=", 1)
+                if name.strip() == key:
+                    return value.strip().strip('"').strip("'")
+    except Exception:
+        logger.debug("Channel directory: failed to read %s from .env", key, exc_info=True)
+    return ""
+
+
+def _include_allowed_whatsapp_dms(entries: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    allowed = os.getenv("WHATSAPP_ALLOWED_USERS", "") or _read_dotenv_value("WHATSAPP_ALLOWED_USERS")
+    if not allowed or allowed.strip() == "*":
+        return entries
+
+    labels = _whatsapp_contact_labels()
+    existing_ids = {str(entry.get("id")) for entry in entries}
+    existing_names = {str(entry.get("name", "")).casefold() for entry in entries}
+
+    for item in allowed.split(","):
+        phone = _normalize_e164(item)
+        if not phone or phone in existing_ids:
+            continue
+        name = labels.get(phone, phone)
+        if name.casefold() in existing_names:
+            continue
+        entries.append({
+            "id": phone,
+            "name": name,
+            "type": "dm",
+            "thread_id": None,
+        })
+        existing_ids.add(phone)
+        existing_names.add(name.casefold())
 
     return entries
 

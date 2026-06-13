@@ -323,7 +323,8 @@ def find_docker() -> Optional[str]:
 #       non-root user via --user, since no privilege drop is needed
 #       in that mode.
 # Block privilege escalation and limit PIDs.
-# /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
+# /tmp is host-backed per container (see DockerEnvironment.__init__) so media
+# generated at hard-coded /tmp paths can be delivered by the host gateway.
 _BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
@@ -331,7 +332,6 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
 ]
 
@@ -546,6 +546,7 @@ class DockerEnvironment(BaseEnvironment):
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
+        self._tmp_dir: Optional[str] = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -580,6 +581,7 @@ class DockerEnvironment(BaseEnvironment):
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
         workspace_explicitly_mounted = False
+        tmp_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
                 logger.warning(f"Docker volume entry is not a string: {vol!r}")
@@ -591,6 +593,8 @@ class DockerEnvironment(BaseEnvironment):
                 volume_args.extend(["-v", vol])
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
+                if ":/tmp" in vol:
+                    tmp_explicitly_mounted = True
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
@@ -635,6 +639,23 @@ class DockerEnvironment(BaseEnvironment):
             volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
+
+        if not tmp_explicitly_mounted:
+            tmp_root = os.environ.get(
+                "HERMES_DOCKER_TMP_ROOT",
+                "/home/rj/.hermes/runtime/docker-tmp",
+            )
+            tmp_root = os.path.abspath(os.path.expanduser(tmp_root))
+            safe_task_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task_id or "default"))[:80]
+            self._tmp_dir = os.path.join(tmp_root, f"{safe_task_id}-{uuid.uuid4().hex[:12]}")
+            os.makedirs(self._tmp_dir, exist_ok=True)
+            try:
+                os.chmod(self._tmp_dir, 0o1777)
+            except OSError:
+                logger.debug("Docker: could not chmod tmp dir %s", self._tmp_dir, exc_info=True)
+            volume_args.extend(["-v", f"{self._tmp_dir}:/tmp"])
+            logger.info("Docker: mounting host-backed tmp dir %s -> /tmp", self._tmp_dir)
+            self._env.setdefault("TMPDIR", "/tmp")
 
         # Mount credential files (OAuth tokens, etc.) declared by skills.
         # Read-only so the container can authenticate but not modify host creds.
@@ -1295,6 +1316,9 @@ class DockerEnvironment(BaseEnvironment):
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)
+            if self._tmp_dir:
+                shutil.rmtree(self._tmp_dir, ignore_errors=True)
+                self._tmp_dir = None
 
     def wait_for_cleanup(self, timeout: float = 30.0) -> bool:
         """Block up to *timeout* seconds for the cleanup worker thread.

@@ -515,6 +515,11 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # Message-triggered skill autoload rules. Unlike channel/topic bindings,
+    # these can apply on every matching message so formatting/operational
+    # policy skills are not skipped in long-lived sessions.
+    auto_skill_triggers: List[Dict[str, Any]] = field(default_factory=list)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -635,6 +640,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "auto_skill_triggers": self.auto_skill_triggers,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
@@ -681,6 +687,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        auto_skill_triggers = data.get("auto_skill_triggers", [])
+        if not isinstance(auto_skill_triggers, list):
+            auto_skill_triggers = []
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -716,6 +726,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            auto_skill_triggers=auto_skill_triggers,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
             filter_silence_narration=_coerce_bool(
@@ -832,6 +843,9 @@ def load_gateway_config() -> GatewayConfig:
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
+
+            if "auto_skill_triggers" in yaml_cfg:
+                gw_data["auto_skill_triggers"] = yaml_cfg["auto_skill_triggers"]
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
@@ -1111,6 +1125,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ignored_threads, list):
                         ignored_threads = ",".join(str(v) for v in ignored_threads)
                     os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
+                mention_only_chats = telegram_cfg.get("mention_only_chats")
+                if mention_only_chats is not None and not os.getenv("TELEGRAM_MENTION_ONLY_CHATS"):
+                    if isinstance(mention_only_chats, list):
+                        mention_only_chats = ",".join(str(v) for v in mention_only_chats)
+                    os.environ["TELEGRAM_MENTION_ONLY_CHATS"] = str(mention_only_chats)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):

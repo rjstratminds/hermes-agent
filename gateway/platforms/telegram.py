@@ -27,6 +27,10 @@ try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
+    try:
+        from telegram import ReplyParameters
+    except ImportError:
+        ReplyParameters = None
     from telegram.ext import (
         Application,
         CommandHandler,
@@ -45,6 +49,7 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    ReplyParameters = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -194,6 +199,33 @@ def _strip_mdv2(text: str) -> str:
     # Remove MarkdownV2 spoiler markers (||text|| → text)
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
     return cleaned
+
+
+_TELEGRAM_UNSUPPORTED_MESSAGE_PLACEHOLDER = (
+    "This message is not supported in your version of Telegram. "
+    "Please update to the latest version."
+)
+
+
+def _is_telegram_unsupported_placeholder(text: Optional[str]) -> bool:
+    """True when Telegram supplied its generic unsupported-message placeholder.
+
+    Telegram can expose this placeholder through Bot API reply context when a
+    user replies to a message type the client/API cannot render. Treating it as
+    real quoted text causes Hermes to inject it into the agent prompt as
+    `[Replying to: ...]`, so Eve appears to parrot the placeholder.
+    """
+    return bool(text and text.strip() == _TELEGRAM_UNSUPPORTED_MESSAGE_PLACEHOLDER)
+
+
+def _telegram_reply_quote_text(text: Optional[str], limit: int = 256) -> Optional[str]:
+    """Return a compact explicit Telegram quote, or None for unusable text."""
+    if not text or _is_telegram_unsupported_placeholder(text):
+        return None
+    compact = re.sub(r"\s+", " ", str(text)).strip()
+    if not compact:
+        return None
+    return compact[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -416,13 +448,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
-        # with the raw agent markdown so tables/task lists/etc. render natively.
-        # Latched off after a capability failure on sendRichMessage /
-        # sendRichMessageDraft (e.g. older python-telegram-bot without the
-        # endpoint) so later sends skip the doomed rich attempt entirely.
-        self._rich_send_disabled: bool = False
-        self._rich_draft_disabled: bool = False
+        # Bot API 10.1 Rich Messages are opt-in only. Some Telegram clients
+        # render rich messages as the generic unsupported-message placeholder,
+        # so keep the stable sendMessage path as the default.
+        self._rich_messages_enabled: bool = self._resolve_rich_messages_enabled(config)
+        self._rich_send_disabled: bool = not self._rich_messages_enabled
+        self._rich_draft_disabled: bool = not self._rich_messages_enabled
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -594,6 +625,46 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
+    @classmethod
+    def _metadata_reply_quote(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not metadata:
+            return None
+        return _telegram_reply_quote_text(metadata.get("telegram_reply_quote"))
+
+    @classmethod
+    def _metadata_explicit_quote_reply_to(
+        cls,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[int]:
+        if not cls._metadata_reply_quote(metadata):
+            return None
+        return cls._metadata_reply_to_message_id(metadata)
+
+    @classmethod
+    def _reply_parameters_for_send(
+        cls,
+        reply_to_message_id: Optional[int],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Any]:
+        if reply_to_message_id is None or ReplyParameters is None:
+            return None
+        quote = cls._metadata_reply_quote(metadata)
+        if not quote:
+            return None
+        return ReplyParameters(message_id=reply_to_message_id, quote=quote)
+
+    @classmethod
+    def _reply_parameters_payload(
+        cls,
+        reply_to_message_id: int,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"message_id": reply_to_message_id}
+        quote = cls._metadata_reply_quote(metadata)
+        if quote:
+            payload["quote"] = quote
+        return payload
+
     @staticmethod
     def _looks_like_private_chat_id(chat_id: str) -> bool:
         try:
@@ -641,6 +712,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if reply_to_mode == "off":
                 return None
             return cls._metadata_reply_to_message_id(metadata)
+        explicit_quote_reply_to = cls._metadata_explicit_quote_reply_to(metadata)
+        if explicit_quote_reply_to is not None:
+            return explicit_quote_reply_to
         return None
 
     @classmethod
@@ -906,6 +980,33 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    @staticmethod
+    def _coerce_bool_value(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        lowered = str(value).strip().lower()
+        if lowered in {"true", "1", "yes", "on", "enabled"}:
+            return True
+        if lowered in {"false", "0", "no", "off", "disabled"}:
+            return False
+        return default
+
+    @classmethod
+    def _resolve_rich_messages_enabled(cls, config: PlatformConfig) -> bool:
+        env_value = os.getenv("HERMES_TELEGRAM_RICH_MESSAGES")
+        if env_value is not None:
+            return cls._coerce_bool_value(env_value, default=False)
+        extra = getattr(config, "extra", None) or {}
+        if isinstance(extra, dict):
+            for key in ("rich_messages", "enable_rich_messages"):
+                if key in extra:
+                    return cls._coerce_bool_value(extra.get(key), default=False)
+        return False
+
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}
@@ -916,12 +1017,11 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Bot API 10.1 Rich Messages (sendRichMessage)
     #
-    # Final / new-message replies opportunistically use sendRichMessage with
-    # the RAW agent markdown so richer constructs (tables, task lists,
-    # collapsible details, math, ...) render natively. The legacy MarkdownV2
-    # send() path stays as the fallback for unsupported/oversized content and
-    # older PTB/clients. Streaming edits/drafts are intentionally untouched —
-    # Telegram exposes no rich-edit method.
+    # Final / new-message replies can opt into sendRichMessage with RAW agent
+    # markdown so richer constructs (tables, task lists, collapsible details,
+    # math, ...) render natively. The legacy MarkdownV2 send() path stays as
+    # the default because older Telegram clients can display Bot API rich
+    # messages as unsupported-message placeholders.
     # ------------------------------------------------------------------
     def _content_fits_rich_limits(self, content: str) -> bool:
         """Cheap pre-check for the one hard rich limit we can count locally.
@@ -948,7 +1048,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()
             and self._content_fits_rich_limits(content)
@@ -1013,11 +1114,19 @@ class TelegramAdapter(BasePlatformAdapter):
         case so the legacy path stays the single source of the refuse result.
         """
         metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+        metadata_reply_quote = self._metadata_reply_quote(metadata)
         private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+        dm_topic_explicit_quote_reply = (
+            private_dm_topic_send
+            and self._reply_to_mode == "off"
+            and metadata_reply_to is not None
+            and bool(metadata_reply_quote)
+        )
         dm_topic_reply_to_off = (
             private_dm_topic_send
             and self._reply_to_mode == "off"
             and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+            and not dm_topic_explicit_quote_reply
         )
         reply_to_source = reply_to or (
             str(metadata_reply_to)
@@ -1025,9 +1134,15 @@ class TelegramAdapter(BasePlatformAdapter):
             else None
         )
         if private_dm_topic_send:
-            should_thread = reply_to_source is not None and self._reply_to_mode != "off"
+            should_thread = reply_to_source is not None and (
+                self._reply_to_mode != "off" or dm_topic_explicit_quote_reply
+            )
         else:
-            should_thread = self._should_thread_reply(reply_to_source, 0)
+            explicit_quote_reply = False
+            if reply_to_source is None and metadata_reply_to is not None and metadata_reply_quote:
+                reply_to_source = str(metadata_reply_to)
+                explicit_quote_reply = True
+            should_thread = explicit_quote_reply or self._should_thread_reply(reply_to_source, 0)
         reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
         if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
             # Refusing to send outside the requested DM topic — defer to the
@@ -1075,7 +1190,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # object), NOT the legacy reply_to_message_id scalar. Unknown
             # params are silently ignored by the Bot API, so the scalar would
             # quietly drop the reply anchor instead of erroring.
-            payload["reply_parameters"] = {"message_id": reply_to_id}
+            payload["reply_parameters"] = self._reply_parameters_payload(reply_to_id, metadata)
 
         try:
             msg = await self._bot.do_api_request(
@@ -1126,7 +1241,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
@@ -2194,7 +2310,15 @@ class TelegramAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+                metadata_reply_quote = self._metadata_reply_quote(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+                dm_topic_explicit_quote_reply = (
+                    private_dm_topic_send
+                    and self._reply_to_mode == "off"
+                    and metadata_reply_to is not None
+                    and bool(metadata_reply_quote)
+                    and i == 0
+                )
                 # reply_to_mode="off" on the existing telegram_dm_topic_reply_fallback path
                 # is an explicit user opt-in to "message_thread_id alone is enough" (PR #23994
                 # / commit 21a15b671). Honor it — don't fail loud just because the anchor was
@@ -2204,6 +2328,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     private_dm_topic_send
                     and self._reply_to_mode == "off"
                     and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+                    and not dm_topic_explicit_quote_reply
                 )
                 reply_to_source = reply_to or (
                     str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None
@@ -2211,10 +2336,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 if private_dm_topic_send:
                     should_thread = (
                         reply_to_source is not None
-                        and self._reply_to_mode != "off"
+                        and (
+                            self._reply_to_mode != "off"
+                            or dm_topic_explicit_quote_reply
+                        )
                     )
                 else:
-                    should_thread = self._should_thread_reply(reply_to_source, i)
+                    explicit_quote_reply = False
+                    if (
+                        reply_to_source is None
+                        and metadata_reply_to is not None
+                        and metadata_reply_quote
+                        and i == 0
+                    ):
+                        reply_to_source = str(metadata_reply_to)
+                        explicit_quote_reply = True
+                    should_thread = explicit_quote_reply or self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
                 if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
                     return SendResult(
@@ -2233,6 +2370,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_kwargs = dict(thread_kwargs)
                     thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
+                reply_parameters = self._reply_parameters_for_send(reply_to_id, metadata)
 
                 msg = None
                 for _send_attempt in range(3):
@@ -2243,7 +2381,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
+                                reply_to_message_id=None if reply_parameters else reply_to_id,
+                                reply_parameters=reply_parameters,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -2257,7 +2396,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
-                                    reply_to_message_id=reply_to_id,
+                                    reply_to_message_id=None if reply_parameters else reply_to_id,
+                                    reply_parameters=reply_parameters,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -2319,6 +2459,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, send_err,
                                 )
                                 reply_to_id = None
+                                reply_parameters = None
                                 if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
                                     thread_kwargs = {}
                                     effective_thread_id = None
@@ -6376,6 +6517,12 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type = "group"
         elif telegram_chat_type == "channel":
             chat_type = "channel"
+        elif str(getattr(chat, "id", "")).startswith("-"):
+            # Defensive fallback for tests/mocks and unusual PTB enum string
+            # forms. Telegram groups/supergroups use negative chat ids; never
+            # treat those as private DMs just because the type could not be
+            # normalized.
+            chat_type = "group"
 
         # Resolve Telegram topic name and skill binding.
         # Only preserve message_thread_id when Telegram marks the message as
@@ -6476,6 +6623,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     or message.reply_to_message.caption
                     or None
                 )
+            if _is_telegram_unsupported_placeholder(reply_to_text):
+                logger.debug(
+                    "[Telegram] Dropping unsupported-message placeholder from reply context "
+                    "for message %s replying to %s",
+                    getattr(message, "message_id", None),
+                    reply_to_id,
+                )
+                reply_to_text = None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

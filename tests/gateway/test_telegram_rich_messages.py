@@ -1,9 +1,9 @@
 """Tests for Bot API 10.1 Rich Messages (sendRichMessage) on Telegram.
 
-Final / new-message replies opportunistically use ``sendRichMessage`` with the
-RAW agent markdown so tables, task lists, etc. render natively. The legacy
-MarkdownV2 ``send_message`` path stays as the fallback for unsupported /
-oversized content and for transports that lack the endpoint.
+Final / new-message replies can opt into ``sendRichMessage`` with the RAW agent
+markdown so tables, task lists, etc. render natively. The legacy MarkdownV2
+``send_message`` path is the default because some clients render rich messages
+as unsupported-message placeholders.
 
 The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 (:func:`_ensure_telegram_mock`), so these tests construct a real
@@ -26,9 +26,12 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- [x] table renders"
 
 
-def _make_adapter(extra=None):
+def _make_adapter(extra=None, *, rich_enabled=True):
     """Build a TelegramAdapter with a mock bot wired for the rich path."""
-    config = PlatformConfig(enabled=True, token="fake-token", extra=extra or {})
+    merged_extra = {"rich_messages": True} if rich_enabled else {}
+    if extra:
+        merged_extra.update(extra)
+    config = PlatformConfig(enabled=True, token="fake-token", extra=merged_extra)
     adapter = TelegramAdapter(config)
     bot = MagicMock()
     # do_api_request as an AsyncMock makes inspect.iscoroutinefunction(...) True,
@@ -49,8 +52,19 @@ def _rich_api_kwargs(adapter):
 
 
 @pytest.mark.asyncio
-async def test_rich_happy_path_sends_raw_markdown():
-    adapter = _make_adapter()
+async def test_rich_disabled_by_default_uses_legacy_send():
+    adapter = _make_adapter(rich_enabled=False)
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_happy_path_sends_raw_markdown_when_enabled():
+    adapter = _make_adapter(extra={"rich_messages": True})
 
     result = await adapter.send("12345", RICH_CONTENT)
 
@@ -67,16 +81,14 @@ async def test_rich_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
-async def test_legacy_rich_messages_config_is_ignored():
+async def test_rich_messages_config_false_uses_legacy_send():
     adapter = _make_adapter(extra={"rich_messages": False})
 
     result = await adapter.send("12345", RICH_CONTENT)
 
     assert result.success is True
-    # The legacy toggle was removed; stale config entries must not disable the
-    # rich path.
-    adapter._bot.do_api_request.assert_awaited_once()
-    adapter._bot.send_message.assert_not_called()
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio
